@@ -1,0 +1,338 @@
+import matplotlib
+matplotlib.use("TkAgg")
+
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.colors import ListedColormap
+import math
+import random
+
+#room
+width = 12*4
+height = 24*4
+people_count = 444
+exits = [(1, 1), (23,23), (47, 1)]
+
+barriers = []
+
+#top barrier (behind downstairs exit)
+for x in range(20, 29):
+    barriers.append((x, 22))
+
+#left barrier
+for y in range(22, 73):
+    barriers.append((20, y))
+
+#right barrier
+for y in range(22, 73):
+    barriers.append((28, y))
+
+slow_zones = []
+
+# generating uncrossable rows of seats
+for y in range(23, 73, 3):
+    for x in range(3, 20):
+        barriers.append((x, y))
+
+    if y + 1 < 73:
+        for x in range(3, 20):
+            slow_zones.append((x, y + 1))
+    if y + 2 < 73:
+        for x in range(3, 20):
+            slow_zones.append((x, y + 2))
+
+for y in range(23, 73, 3):
+    for x in range(29, width - 3):
+        barriers.append((x, y))
+    if y + 1 < 73:
+        for x in range(29, width - 3):
+            slow_zones.append((x, y + 1))
+    if y + 2 < 73:
+        for x in range(29, width - 3):
+            slow_zones.append((x, y + 2))
+
+for y in range(height - 20, height - 10, 3):
+    for x in range(5, width - 5):
+        barriers.append((x, y))
+    if y + 1 < height:
+        for x in range(5, width - 5):
+            slow_zones.append((x, y + 1))
+    if y + 2 < height:
+        for x in range(5, width - 5):
+            slow_zones.append((x, y + 2))
+
+slow_set = set(slow_zones)
+
+#empty grid
+grid = []
+for y in range(height):
+    row = []
+    for x in range(width):
+        row.append(0)
+    grid.append(row)
+
+# add barriers to grid
+for bx, by in barriers:
+    if 0 <= bx < width and 0 <= by < height:
+        grid[by][bx] = 3
+
+# add slow zones to grid
+for sx, sy in slow_zones:
+    if 0 <= sx < width and 0 <= sy < height:
+        grid[sy][sx] = 4
+
+# add exits and ppl
+new_exits = []
+for door in exits:
+    if door[0] == 1:
+        for i in range(6):
+            grid[door[1]][door[0] + i] = 2
+            new_exits.append((door[0] + i, door[1]))
+    elif door[0] == 47:
+        for i in range(6):
+            grid[door[1]][door[0] - i] = 2
+            new_exits.append((door[0] - i, door[1]))
+    else:
+        for i in range(-2, 5):
+            grid[door[1]][door[0] + i] = 2
+            new_exits.append((door[0] + i, door[1]))
+exits = new_exits
+
+
+# distance maps (per exit group)
+
+def compute_distance_map_from_sources(sources):
+    dist_map = [[float('inf')] * width for _ in range(height)]
+    queue = []
+    for sx, sy in sources:
+        dist_map[sy][sx] = 0.0
+        queue.append((sx, sy))
+
+    while queue:
+        x, y = queue.pop(0)
+        base = dist_map[y][x]
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < width and 0 <= ny < height):
+                    continue
+                if grid[ny][nx] == 3:
+                    continue
+
+                # barrier
+                if dx != 0 and dy != 0:
+                    if grid[y][nx] == 3 or grid[ny][x] == 3:
+                        continue
+
+                nd = base + math.sqrt(dx*dx + dy*dy)
+                if nd < dist_map[ny][nx]:
+                    dist_map[ny][nx] = nd
+                    queue.append((nx, ny))
+    return dist_map
+
+distance_map_all = compute_distance_map_from_sources(exits)
+
+mid_sources = [e for e in exits if e[1] == 23]
+left_sources = [e for e in exits if e[1] == 1 and e[0] < width/2]
+right_sources = [e for e in exits if e[1] == 1 and e[0] >= width/2]
+
+distance_map_left = compute_distance_map_from_sources(left_sources)
+distance_map_mid = compute_distance_map_from_sources(mid_sources)
+distance_map_right = compute_distance_map_from_sources(right_sources)
+
+
+people = []
+placed = 0
+pid_counter = 0
+while placed < people_count:
+    x = random.randint(0, width - 1)
+    y = random.randint(0, height - 1)
+    if grid[y][x] == 0 or grid[y][x] == 4:
+        if y > height * 0.55:
+            r = random.random()
+            if r < 0.50:
+                target = "mid"
+            elif r < 0.75:
+                target = "left"
+            else:
+                target = "right"
+        else:
+            target = "any"
+
+        people.append([x, y, 0, target, pid_counter])
+        pid_counter += 1
+        grid[y][x] = 1
+        placed += 1
+
+
+last_pos = {p[4]: (p[0], p[1]) for p in people}
+
+
+# move person
+
+def move_person(px, py, target, pid, new_grid):
+    if target == "left":
+        dist_map = distance_map_left
+    elif target == "right":
+        dist_map = distance_map_right
+    elif target == "mid":
+        dist_map = distance_map_mid
+    else:
+        dist_map = distance_map_all
+
+    prevx, prevy = last_pos.get(pid, (px, py))
+
+    
+    candidates = []
+
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+
+            nx, ny = px + dx, py + dy
+            if not (0 <= nx < width and 0 <= ny < height):
+                continue
+
+            # slow zone
+            if grid[ny][nx] not in (0, 2, 4):
+                continue
+
+            
+            if dx != 0 and dy != 0:
+                if grid[py][nx] == 3 or grid[ny][px] == 3:
+                    continue
+
+            
+            if new_grid[ny][nx] == 1:
+                continue
+
+            d = dist_map[ny][nx]
+
+            
+            back_penalty = 0.8 if (nx, ny) == (prevx, prevy) else 0.0
+           
+            jitter = random.random() * 1e-6
+
+            candidates.append((d + back_penalty + jitter, d, nx, ny))
+
+    if not candidates:
+        return px, py
+
+    
+    candidates.sort(key=lambda t: t[0])
+    best_score, best_d, best_x, best_y = candidates[0]
+
+    
+    cur_d = dist_map[py][px]
+    if best_d > cur_d:
+        
+        pass
+
+    return best_x, best_y
+
+
+# plotting
+
+fig, ax = plt.subplots()
+colours = ['white', 'blue', 'green', 'black', 'red']
+cmap = ListedColormap(colours)
+image = ax.imshow(grid, vmin=0, vmax=4, cmap=cmap)
+
+ax.set_xticks(range(width))
+ax.set_yticks(range(height))
+ax.set_xticklabels([])
+ax.set_yticklabels([])
+ax.grid(True)
+
+time_step = 0
+
+
+# update
+
+def update(frame):
+    global grid, people, time_step, animation
+
+    if len(people) == 0:
+        time_step = 0
+        people = []
+        placed = 0
+        while placed < people_count:
+            x = random.randint(0, width - 1)
+            y = random.randint(0, height - 1)
+            if grid[y][x] == 0 or grid[y][x] == 4:
+                if y > height * 0.55:
+                    r = random.random()
+                    if r < 0.50:
+                        target = "mid"
+                    elif r < 0.75:
+                        target = "left"
+                    else:
+                        target = "right"
+                else:
+                    target = "any"
+
+                pid = random.randint(0, 10**9)
+                people.append([x, y, 0, target, pid])
+                last_pos[pid] = (x, y)
+                placed += 1
+        return image,
+
+    new_grid = []
+    for y in range(height):
+        row = []
+        for x in range(width):
+            row.append(0)
+        new_grid.append(row)
+
+    for bx, by in barriers:
+        if 0 <= bx < width and 0 <= by < height:
+            new_grid[by][bx] = 3
+
+    for sx, sy in slow_zones:
+        if 0 <= sx < width and 0 <= sy < height:
+            new_grid[sy][sx] = 4
+
+    for ex in exits:
+        new_grid[ex[1]][ex[0]] = 2
+
+    new_people = []
+
+    for person in people:
+        px, py, wait_time, target, pid = person
+
+        if wait_time > 0:
+            new_grid[py][px] = 1
+            new_people.append([px, py, wait_time - 1, target, pid])
+            continue
+
+        nx, ny = move_person(px, py, target, pid, new_grid)
+
+        # last pos
+        last_pos[pid] = (px, py)
+
+        if grid[ny][nx] == 2:
+            continue
+
+        if new_grid[ny][nx] == 0 or new_grid[ny][nx] == 4:
+            new_grid[ny][nx] = 1
+            if (nx, ny) in slow_set:
+                new_people.append([nx, ny, 1, target, pid])
+            else:
+                new_people.append([nx, ny, 0, target, pid])
+        else:
+            new_grid[py][px] = 1
+            new_people.append([px, py, 0, target, pid])
+
+    grid = new_grid
+    people = new_people
+    time_step += 1
+
+    image.set_data(grid)
+    ax.set_title("Time steps: " + str(time_step))
+    return image,
+
+animation = FuncAnimation(fig, update, interval=100)
+plt.show()
